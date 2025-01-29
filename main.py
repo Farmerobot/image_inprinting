@@ -13,6 +13,8 @@ import matplotlib.pyplot as plt
 from skimage.metrics import structural_similarity as ssim
 import torch.nn.functional as F
 
+IMG_SIZE = 128
+
 class SelfAttention(nn.Module):
     """Self attention layer for the generator."""
     def __init__(self, in_dim):
@@ -256,7 +258,7 @@ def load_and_split_dataset(data_dir, max_files=None, batch_size=32):
     test_paths = image_paths[train_size + val_size:]
     
     transform = transforms.Compose([
-        transforms.Resize((128, 128)),
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
@@ -286,15 +288,15 @@ class CelebDataset(Dataset):
             image = self.transform(image)
         
         # Create a hole mask (32x32)
-        mask = torch.zeros((4, 128, 128))  # 4 channels: RGB mask + hole position
+        mask = torch.zeros((4, IMG_SIZE, IMG_SIZE))  # 4 channels: RGB mask + hole position
         
         if self.fixed_hole is not None:
             # Use fixed hole position
             hole_h, hole_w = self.fixed_hole
         else:
             # Random hole position with margin
-            hole_h = random.randint(self.margin, 128-32-self.margin)
-            hole_w = random.randint(self.margin, 128-32-self.margin)
+            hole_h = random.randint(self.margin, IMG_SIZE-32-self.margin)
+            hole_w = random.randint(self.margin, IMG_SIZE-32-self.margin)
         
         # Set the RGB mask channels
         mask[:3, hole_h:hole_h+32, hole_w:hole_w+32] = 1
@@ -305,9 +307,9 @@ class CelebDataset(Dataset):
         # Create dilated mask by expanding hole region by x pixels in each direction
         context_size = 4
         h_start = max(0, hole_h - context_size)
-        h_end = min(128, hole_h + 32 + context_size)
+        h_end = min(IMG_SIZE, hole_h + 32 + context_size)
         w_start = max(0, hole_w - context_size)
-        w_end = min(128, hole_w + 32 + context_size)
+        w_end = min(IMG_SIZE, hole_w + 32 + context_size)
         
         dilated_mask = mask.clone()
         dilated_mask[:3, h_start:h_end, w_start:w_end] = 1
@@ -797,15 +799,15 @@ if __name__ == "__main__":
         print(f"Val - G_loss: {val_g_loss:.4f}, Pixel_loss: {val_pixel_loss:.4f}, Edge_loss: {val_edge_loss:.4f}, SSIM: {val_ssim:.4f}")
         print(f"Time - Epoch: {epoch_time:.1f}s, Total: {total_time:.1f}s\n")
     
-    # Save final model
-    torch.save({
-        'generator_state_dict': generator.state_dict(),
-        'discriminator_state_dict': discriminator.state_dict(),
-        'g_optimizer_state_dict': g_optimizer.state_dict(),
-        'd_optimizer_state_dict': d_optimizer.state_dict(),
-        'epoch': epochs,
-        'val_ssim': val_ssim,
-    }, os.path.join(out_dir, 'final_model.pth'))
+        # Save final model
+        torch.save({
+            'generator_state_dict': generator.state_dict(),
+            'discriminator_state_dict': discriminator.state_dict(),
+            'g_optimizer_state_dict': g_optimizer.state_dict(),
+            'd_optimizer_state_dict': d_optimizer.state_dict(),
+            'epoch': epochs,
+            'val_ssim': val_ssim,
+        }, os.path.join(out_dir, 'final_model.pth'))
     
     print("\nGenerating inpainting results...")
     evaluate_and_display(generator, test_loader, device)
