@@ -41,7 +41,7 @@ class SelfAttention(nn.Module):
 
 class Generator(nn.Module):
     """Generator network for image inpainting.
-    A lightweight U-Net style architecture with essential skip connections."""
+    A U-Net style architecture with skip connections and attention."""
     def __init__(self, nf=16):
         super(Generator, self).__init__()
         
@@ -84,7 +84,7 @@ class Generator(nn.Module):
         # Decoder
         self.up3 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         self.dec3 = nn.Sequential(
-            nn.Conv2d(nf*4, nf*4, 3, padding=1),  # Removed skip from bottleneck
+            nn.Conv2d(nf*8, nf*4, 3, padding=1),  # nf*8 because of skip connection
             nn.LeakyReLU(0.2),
             nn.Conv2d(nf*4, nf*4, 3, padding=1),
             nn.LeakyReLU(0.2)
@@ -92,7 +92,7 @@ class Generator(nn.Module):
         
         self.up2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         self.dec2 = nn.Sequential(
-            nn.Conv2d(nf*6, nf*2, 3, padding=1),  # nf*6 because of skip from enc2
+            nn.Conv2d(nf*6, nf*2, 3, padding=1),  # nf*6 because of skip connection
             nn.LeakyReLU(0.2),
             nn.Conv2d(nf*2, nf*2, 3, padding=1),
             nn.LeakyReLU(0.2)
@@ -100,7 +100,7 @@ class Generator(nn.Module):
         
         self.up1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         self.dec1 = nn.Sequential(
-            nn.Conv2d(nf*3, nf, 3, padding=1),    # nf*3 because of skip from enc1
+            nn.Conv2d(nf*3, nf, 3, padding=1),    # nf*3 because of skip connection
             nn.LeakyReLU(0.2),
             nn.Conv2d(nf, 3, 3, padding=1),
             nn.Tanh()
@@ -122,20 +122,23 @@ class Generator(nn.Module):
         e3 = self.enc3(p2)
         p3 = self.pool3(e3)
         
-        # Attention and bottleneck
+        # Attention
         att = self.attention(p3)
+        
+        # Bottleneck
         b = self.bottleneck(att)
         
-        # Decoder with selective skip connections
+        # Decoder with skip connections
         d3 = self.up3(b)
-        d3 = self.dec3(d3)  # No skip connection here
+        d3 = torch.cat([d3, e3], dim=1)  # Skip connection
+        d3 = self.dec3(d3)
         
         d2 = self.up2(d3)
-        d2 = torch.cat([d2, e2], dim=1)  # Skip from encoder level 2
+        d2 = torch.cat([d2, e2], dim=1)  # Skip connection
         d2 = self.dec2(d2)
         
         d1 = self.up1(d2)
-        d1 = torch.cat([d1, e1], dim=1)  # Skip from encoder level 1
+        d1 = torch.cat([d1, e1], dim=1)  # Skip connection
         d1 = self.dec1(d1)
         
         # Only output the hole region
@@ -228,57 +231,49 @@ def edge_aware_loss(real_imgs, fake_imgs, mask):
     
     return edge_loss
 
-def load_and_split_dataset(data_dir, image_size=128, max_files=None, batch_size=32):
-    """Load and split dataset into train, validation, and test sets.
-    
-    Args:
-        data_dir: Directory containing the image files
-        image_size: Size to resize images to (will be square)
-        max_files: Maximum number of files to load (for testing/debugging)
-        batch_size: Batch size for the data loaders
-    """
+def load_and_split_dataset(data_dir, max_files=None, batch_size=32):
+    """Load and split the dataset into train, validation, and test sets (80/10/10 split)."""
     image_paths = glob.glob(os.path.join(data_dir, "*.jpg"))
     if max_files:
         image_paths = image_paths[:max_files]
     
-    # Define transforms
-    transform = transforms.Compose([
-        transforms.Resize((image_size, image_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    ])
-    
-    # Split into train, validation, and test sets (80/10/10)
     total_size = len(image_paths)
+    
+    # Calculate split sizes (80/10/10)
     train_size = int(0.8 * total_size)
     val_size = int(0.1 * total_size)
-    test_size = total_size - train_size - val_size
+    test_size = total_size - train_size - val_size  # Remainder to ensure we use all images
     
+    print(f"\nDataset split sizes:")
+    print(f"Total images: {total_size}")
+    print(f"Train size: {train_size} ({train_size//batch_size} batches)")
+    print(f"Val size: {val_size} ({val_size//batch_size} batches)")
+    print(f"Test size: {test_size} ({test_size//batch_size} batches)\n")
+    
+    # Split paths
     train_paths = image_paths[:train_size]
     val_paths = image_paths[train_size:train_size + val_size]
     test_paths = image_paths[train_size + val_size:]
     
-    # Create datasets
-    train_dataset = CelebDataset(train_paths, transform=transform, image_size=image_size)
-    val_dataset = CelebDataset(val_paths, transform=transform, image_size=image_size)
-    test_dataset = CelebDataset(test_paths, transform=transform, image_size=image_size)
+    transform = transforms.Compose([
+        transforms.Resize((128, 128)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
     
-    # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    train_dataset = CelebDataset(train_paths, transform=transform)
+    val_dataset = CelebDataset(val_paths, transform=transform)
+    test_dataset = CelebDataset(test_paths, transform=transform)
     
-    return train_loader, val_loader, test_loader
+    return train_dataset, val_dataset, test_dataset
 
 class CelebDataset(Dataset):
     """Custom Dataset for loading CelebA face images with masks for inpainting."""
-    def __init__(self, image_paths, transform=None, fixed_hole=None, margin=16, image_size=128):
+    def __init__(self, image_paths, transform=None, fixed_hole=None, margin=16):
         self.image_paths = image_paths
         self.transform = transform
         self.fixed_hole = fixed_hole
         self.margin = margin
-        self.image_size = image_size
-        self.hole_size = image_size // 4  # hole size will be 1/4 of image size
     
     def __len__(self):
         return len(self.image_paths)
@@ -290,29 +285,29 @@ class CelebDataset(Dataset):
         if self.transform:
             image = self.transform(image)
         
-        # Create a hole mask
-        mask = torch.zeros((4, self.image_size, self.image_size))  # 4 channels: RGB mask + hole position
+        # Create a hole mask (32x32)
+        mask = torch.zeros((4, 128, 128))  # 4 channels: RGB mask + hole position
         
         if self.fixed_hole is not None:
             # Use fixed hole position
             hole_h, hole_w = self.fixed_hole
         else:
             # Random hole position with margin
-            hole_h = random.randint(self.margin, self.image_size-self.hole_size-self.margin)
-            hole_w = random.randint(self.margin, self.image_size-self.hole_size-self.margin)
+            hole_h = random.randint(self.margin, 128-32-self.margin)
+            hole_w = random.randint(self.margin, 128-32-self.margin)
         
         # Set the RGB mask channels
-        mask[:3, hole_h:hole_h+self.hole_size, hole_w:hole_w+self.hole_size] = 1
+        mask[:3, hole_h:hole_h+32, hole_w:hole_w+32] = 1
         
         # Set the hole position channel
-        mask[3, hole_h:hole_h+self.hole_size, hole_w:hole_w+self.hole_size] = 1
+        mask[3, hole_h:hole_h+32, hole_w:hole_w+32] = 1
         
-        # Create dilated mask by expanding hole region
-        context_size = 8
+        # Create dilated mask by expanding hole region by x pixels in each direction
+        context_size = 4
         h_start = max(0, hole_h - context_size)
-        h_end = min(self.image_size, hole_h + self.hole_size + context_size)
+        h_end = min(128, hole_h + 32 + context_size)
         w_start = max(0, hole_w - context_size)
-        w_end = min(self.image_size, hole_w + self.hole_size + context_size)
+        w_end = min(128, hole_w + 32 + context_size)
         
         dilated_mask = mask.clone()
         dilated_mask[:3, h_start:h_end, w_start:w_end] = 1
@@ -583,68 +578,60 @@ def evaluate_and_display(generator, test_loader, device, num_images=10):
     plt.savefig(os.path.join('out', 'inpainting_results.png'), dpi=150, bbox_inches='tight')
     plt.close()
 
-def evaluate_and_display_fixed(generator, test_dataset, device, image_size=128, fixed_indices=[0, 1, 2], fixed_holes=None):
-    """Evaluate the model with fixed hole positions."""
+def evaluate_and_display_fixed(generator, test_dataset, device, fixed_indices=[0, 1, 2], fixed_holes=[(48, 48), (32, 64), (64, 32)]):
+    """Display original, masked, and inpainted images side by side with fixed holes."""
     generator.eval()
     
-    if fixed_holes is None:
-        # Default hole positions scaled to image size
-        hole_size = image_size // 4
-        center = image_size // 2 - hole_size // 2
-        fixed_holes = [
-            (center, center),  # Center
-            (center - hole_size, center),  # Above center
-            (center, center + hole_size)   # Right of center
-        ]
-    
-    # Create a new dataset with fixed holes
-    fixed_datasets = [
-        CelebDataset([test_dataset.image_paths[i]], transform=test_dataset.transform, 
-                    fixed_hole=hole, image_size=image_size)
-        for i, hole in zip(fixed_indices, fixed_holes)
-    ]
-    
-    # Create figure
+    # Create a figure with subplots
     fig, axes = plt.subplots(len(fixed_indices), 4, figsize=(16, 4*len(fixed_indices)))
-    if len(fixed_indices) == 1:
-        axes = axes.reshape(1, -1)
     
-    for i, dataset in enumerate(fixed_datasets):
-        image, masked_image, mask, _ = dataset[0]
+    for i, (idx, hole_pos) in enumerate(zip(fixed_indices, fixed_holes)):
+        # Get the image and create fixed mask
+        image_path = test_dataset.image_paths[idx]
+        image = Image.open(image_path).convert('RGB')
+        image = test_dataset.transform(image)
         image = image.unsqueeze(0).to(device)
-        masked_image = masked_image.unsqueeze(0).to(device)
-        mask = mask.unsqueeze(0).to(device)
+        
+        # Create mask with fixed hole
+        mask = torch.zeros((1, 4, 128, 128), device=device)
+        hole_h, hole_w = hole_pos
+        mask[0, :3, hole_h:hole_h+32, hole_w:hole_w+32] = 1
+        mask[0, 3, hole_h:hole_h+32, hole_w:hole_w+32] = 1
+        
+        # Create masked image
+        masked_image = image * (1 - mask[:, :3])
+        model_input = torch.cat([masked_image, mask[:, 3:]], dim=1)
         
         with torch.no_grad():
-            generated_image = generator(masked_image)
-            completed_image = image * (1 - mask[:, :3]) + generated_image * mask[:, :3]
-            
-            # Convert images back to display format
-            image = ((image[0].cpu().numpy() + 1) / 2).transpose(1, 2, 0)
-            masked_image = ((masked_image[0, :3].cpu().numpy() + 1) / 2).transpose(1, 2, 0)
-            generated_image = ((generated_image[0].cpu().numpy() + 1) / 2).transpose(1, 2, 0)
-            completed_image = ((completed_image[0].cpu().numpy() + 1) / 2).transpose(1, 2, 0)
-            
-            # Display images
-            axes[i, 0].imshow(image)
-            axes[i, 0].set_title('Original')
-            axes[i, 0].axis('off')
-            
-            axes[i, 1].imshow(masked_image)
-            axes[i, 1].set_title('Masked')
-            axes[i, 1].axis('off')
-            
-            axes[i, 2].imshow(generated_image)
-            axes[i, 2].set_title('Generated (hole only)')
-            axes[i, 2].axis('off')
-            
-            axes[i, 3].imshow(completed_image)
-            axes[i, 3].set_title('Inpainted')
-            axes[i, 3].axis('off')
+            generated_image = generator(model_input)
+            completed_image = image * (1 - mask[:, :3]) + generated_image
+        
+        # Convert images back to display format
+        real_img = ((image[0].cpu().numpy() + 1) / 2).transpose(1, 2, 0)
+        masked_img = ((masked_image[0].cpu().numpy() + 1) / 2).transpose(1, 2, 0)
+        generated_img = ((generated_image[0].cpu().numpy() + 1) / 2).transpose(1, 2, 0)
+        completed_img = ((completed_image[0].cpu().numpy() + 1) / 2).transpose(1, 2, 0)
+        
+        # Display images
+        axes[i, 0].imshow(real_img)
+        axes[i, 0].set_title('Original')
+        axes[i, 0].axis('off')
+        
+        axes[i, 1].imshow(masked_img)
+        axes[i, 1].set_title('Masked')
+        axes[i, 1].axis('off')
+        
+        axes[i, 2].imshow(generated_img)
+        axes[i, 2].set_title('Generated (hole only)')
+        axes[i, 2].axis('off')
+        
+        axes[i, 3].imshow(completed_img)
+        axes[i, 3].set_title('Inpainted')
+        axes[i, 3].axis('off')
     
     plt.tight_layout()
     os.makedirs('out', exist_ok=True)
-    plt.savefig(os.path.join('out', 'fixed_inpainting_results.png'))
+    plt.savefig(os.path.join('out', 'inpainting_fixed_results.png'))
     plt.close()
 
 def print_model_summary(model):
@@ -698,7 +685,7 @@ if __name__ == "__main__":
     max_files = 200
     epochs = 20
     
-    print(f"Starting training...")
+    print(f"Starting training with edge-aware loss...")
     
     # Check for AMD GPU
     if torch.backends.mps.is_available():
@@ -712,12 +699,17 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
     
     # Load and split the dataset
-    train_loader, val_loader, test_loader = load_and_split_dataset(data_dir, max_files=max_files, batch_size=batch_size)
+    train_dataset, val_dataset, test_dataset = load_and_split_dataset(data_dir, max_files=max_files, batch_size=batch_size)
     
     print(f"Dataset splits:")
-    print(f"Train: {len(train_loader.dataset)} images")
-    print(f"Validation: {len(val_loader.dataset)} images")
-    print(f"Test: {len(test_loader.dataset)} images")
+    print(f"Train: {len(train_dataset)} images")
+    print(f"Validation: {len(val_dataset)} images")
+    print(f"Test: {len(test_dataset)} images")
+    
+    # Create dataloaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=False)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=False)
     
     # Initialize models
     generator = Generator().to(device)
@@ -805,7 +797,7 @@ if __name__ == "__main__":
     
     print("\nGenerating inpainting results...")
     evaluate_and_display(generator, test_loader, device)
-    evaluate_and_display_fixed(generator, test_loader.dataset, device)
+    evaluate_and_display_fixed(generator, test_dataset, device)
     
     # Plot training history
     plt.figure(figsize=(15, 5))
