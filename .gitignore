@@ -32,7 +32,7 @@ env/
 *.swo
 
 # Project specific
-data_celeb/
+# data_celeb/
 *.pth
 result_*.png
 best_model.pth
