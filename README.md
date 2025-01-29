@@ -23,43 +23,7 @@ This project implements an image inpainting system using Generative Adversarial 
 ## Model Architecture
 
 ### Network Architecture Diagram
-```mermaid
-graph TD
-    subgraph Generator
-        Input[Input Image + Mask] --> Enc1[Encoder 1: Conv 64]
-        Enc1 --> Pool1[MaxPool]
-        Pool1 --> Enc2[Encoder 2: Conv 128]
-        Enc2 --> Pool2[MaxPool]
-        Enc3[Encoder 3: Conv 256]
-        Pool2 --> Enc3
-        Enc3 --> Pool3[MaxPool]
-        Pool3 --> Attn[Self-Attention]
-        Attn --> BN[Bottleneck: Conv 256]
-        
-        BN --> Up3[Upsample]
-        Enc3 --Skip--> Dec3Input[Concat]
-        Up3 --> Dec3Input
-        Dec3Input --> Dec3[Decoder 3: Conv 256]
-        
-        Dec3 --> Up2[Upsample]
-        Enc2 --Skip--> Dec2Input[Concat]
-        Up2 --> Dec2Input
-        Dec2Input --> Dec2[Decoder 2: Conv 128]
-        
-        Dec2 --> Up1[Upsample]
-        Enc1 --Skip--> Dec1Input[Concat]
-        Up1 --> Dec1Input
-        Dec1Input --> Dec1[Decoder 1: Conv 64]
-        Dec1 --> Output[Output Image]
-    end
-
-    subgraph Discriminator
-        DInput[Input Image] --> DConv1[Conv 32 stride=2]
-        DConv1 --> DConv2[Conv 64 stride=2]
-        DConv2 --> DConv3[Conv 1 stride=1]
-        DConv3 --> DOutput[Patch Output]
-    end
-```
+![Network Architecture](report_images/architecture.svg)
 
 ### Generator Network (4.88M parameters)
 The generator follows a U-Net style architecture with skip connections and self-attention mechanisms:
