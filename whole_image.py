@@ -110,10 +110,10 @@ class Generator(nn.Module):
         if mask is None:
             mask = x[:, 3:4]  # Get the mask
             x = x[:, :3]      # Get the RGB channels
-            x = torch.cat([x, mask], dim=1)
         
+        # Process the whole image without masking the input
         # Encoder
-        e1 = self.enc1(x)
+        e1 = self.enc1(torch.cat([x, mask], dim=1))  # Feed both image and mask
         p1 = self.pool1(e1)
         
         e2 = self.enc2(p1)
@@ -122,7 +122,7 @@ class Generator(nn.Module):
         e3 = self.enc3(p2)
         p3 = self.pool3(e3)
         
-        # Attention
+        # Attention on the whole feature map
         att = self.attention(p3)
         
         # Bottleneck
@@ -302,24 +302,13 @@ class CelebDataset(Dataset):
         # Set the hole position channel
         mask[3, hole_h:hole_h+32, hole_w:hole_w+32] = 1
         
-        # Create dilated mask by expanding hole region by x pixels in each direction
-        context_size = 4
-        h_start = max(0, hole_h - context_size)
-        h_end = min(128, hole_h + 32 + context_size)
-        w_start = max(0, hole_w - context_size)
-        w_end = min(128, hole_w + 32 + context_size)
-        
-        dilated_mask = mask.clone()
-        dilated_mask[:3, h_start:h_end, w_start:w_end] = 1
-        dilated_mask[3, h_start:h_end, w_start:w_end] = 1
-        
         # Apply the mask to create the masked image
         masked_image = image * (1 - mask[:3])
         
-        # Add the dilated mask as the 4th channel
-        masked_image = torch.cat([masked_image, dilated_mask[3:]], dim=0)
+        # Add the mask as the 4th channel
+        masked_image = torch.cat([masked_image, mask[3:]], dim=0)
         
-        return image, masked_image, mask, dilated_mask
+        return image, masked_image, mask
 
 def validate(generator, discriminator, val_loader, criterion_gan, criterion_pixel, device):
     """Validate the model."""
@@ -339,11 +328,10 @@ def validate(generator, discriminator, val_loader, criterion_gan, criterion_pixe
         return img
     
     with torch.no_grad():
-        for real_imgs, masked_imgs, masks, dilated_masks in val_loader:
+        for real_imgs, masked_imgs, masks in val_loader:
             real_imgs = real_imgs.to(device)
             masked_imgs = masked_imgs.to(device)
             masks = masks.to(device)
-            dilated_masks = dilated_masks.to(device)
             
             # Generate inpainted image
             gen_imgs = generator(masked_imgs)
@@ -359,18 +347,16 @@ def validate(generator, discriminator, val_loader, criterion_gan, criterion_pixe
             fake_validity = discriminator(composited_imgs)
             g_adv_loss = criterion_gan(fake_validity, torch.ones_like(fake_validity))
             
-            # Pixel-wise loss (use dilated mask for learning context)
-            hole_region_real = real_imgs * dilated_masks[:, :3]
-            hole_region_fake = gen_imgs * dilated_masks[:, :3]
-            pixel_loss = criterion_pixel(hole_region_fake, hole_region_real)
+            # Pixel-wise loss (use whole image for learning)
+            pixel_loss = criterion_pixel(gen_imgs * masks[:, :3], real_imgs * masks[:, :3])
             
-            # Edge-aware loss with dilated context
-            edge_loss = edge_aware_loss(real_imgs, composited_imgs, dilated_masks)
+            # Edge-aware loss with whole image context
+            edge_loss = edge_aware_loss(real_imgs, composited_imgs, masks)
             
             # Total generator loss
             g_loss = g_adv_loss + 100 * pixel_loss + 25 * edge_loss
             
-            # Calculate SSIM for the hole region (use original mask)
+            # Calculate SSIM for the hole region
             ssim_val = calculate_ssim(
                 real_imgs[0].cpu(),
                 composited_imgs[0].detach().cpu(),
@@ -407,11 +393,10 @@ def train_epoch(generator, discriminator, train_loader, g_optimizer, d_optimizer
     d_real_acc = []
     d_fake_acc = []
     
-    for batch_idx, (real_imgs, masked_imgs, masks, dilated_masks) in enumerate(train_loader):
+    for batch_idx, (real_imgs, masked_imgs, masks) in enumerate(train_loader):
         real_imgs = real_imgs.to(device)
         masked_imgs = masked_imgs.to(device)
         masks = masks.to(device)
-        dilated_masks = dilated_masks.to(device)
         batch_size = real_imgs.size(0)
         
         # Only train discriminator if its accuracy is below threshold
@@ -461,20 +446,18 @@ def train_epoch(generator, discriminator, train_loader, g_optimizer, d_optimizer
         # Train Generator
         g_optimizer.zero_grad()
         
-        # Generate inpainted image using dilated mask for context
-        gen_imgs = generator(masked_imgs)  # masked_imgs already contains dilated mask
+        # Generate inpainted image
+        gen_imgs = generator(masked_imgs)
         
         # Generator adversarial loss
         fake_validity = discriminator(composited_imgs)
         g_adv_loss = criterion_gan(fake_validity, valid)
         
-        # Pixel-wise loss (use dilated mask for learning context)
-        hole_region_real = real_imgs * dilated_masks[:, :3]
-        hole_region_fake = gen_imgs * dilated_masks[:, :3]
-        pixel_loss = criterion_pixel(hole_region_fake, hole_region_real)
+        # Pixel-wise loss (use whole image for learning)
+        pixel_loss = criterion_pixel(gen_imgs * masks[:, :3], real_imgs * masks[:, :3])
         
-        # Edge-aware loss with dilated context
-        edge_loss = edge_aware_loss(real_imgs, composited_imgs, dilated_masks)
+        # Edge-aware loss with whole image context
+        edge_loss = edge_aware_loss(real_imgs, composited_imgs, masks)
         
         # Total generator loss (weighted sum)
         g_loss = g_adv_loss + 100 * pixel_loss + 25 * edge_loss
@@ -484,12 +467,12 @@ def train_epoch(generator, discriminator, train_loader, g_optimizer, d_optimizer
             torch.nn.utils.clip_grad_norm_(generator.parameters(), max_grad_norm)
             g_optimizer.step()
         
-        # Calculate SSIM for the hole region (use original mask for evaluation)
+        # Calculate SSIM for the hole region
         with torch.no_grad():
             ssim_val = calculate_ssim(
                 real_imgs[0].cpu(),
                 composited_imgs[0].detach().cpu(),
-                masks[0].cpu()  # Use original mask for SSIM
+                masks[0].cpu()
             )
         
         # Update totals only if values are not NaN
@@ -521,7 +504,7 @@ def evaluate_and_display(generator, test_loader, device, num_images=10):
     generator.eval()
     
     # Get a batch of test images
-    real_images, masked_images, masks, dilated_masks = next(iter(test_loader))
+    real_images, masked_images, masks = next(iter(test_loader))
     real_images = real_images[:num_images].to(device)
     masked_images = masked_images[:num_images].to(device)
     masks = masks[:num_images].to(device)
@@ -600,7 +583,7 @@ def evaluate_and_display_fixed(generator, test_dataset, device, fixed_indices=[0
         for i, (idx, hole_pos) in enumerate(zip(fixed_indices, fixed_holes)):
             # Get the image
             test_dataset.fixed_hole = hole_pos
-            image, masked_image, mask, dilated_mask = test_dataset[idx]
+            image, masked_image, mask = test_dataset[idx]
             
             # Add batch dimension and move to device
             image = image.unsqueeze(0).to(device)
