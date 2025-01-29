@@ -21,7 +21,7 @@ wheels/
 *.egg
 
 # Virtual Environment
-venv/
+.venv/
 ENV/
 env/
 
@@ -37,6 +37,7 @@ env/
 result_*.png
 best_model.pth
 final_model.pth
+out/
 
 # Logs and databases
 *.log

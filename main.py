@@ -41,81 +41,105 @@ class SelfAttention(nn.Module):
 
 class Generator(nn.Module):
     """Generator network for image inpainting.
-    
-    A lightweight U-Net style architecture with skip connections and attention.
-    """
-    def __init__(self):
+    A lightweight U-Net style architecture with essential skip connections."""
+    def __init__(self, nf=16):
         super(Generator, self).__init__()
         
-        # Reduced number of filters
-        nf = 16  # base number of filters
-        
-        # Encoder (with downsampling)
+        # Encoder
         self.enc1 = nn.Sequential(
-            nn.Conv2d(3, nf, 4, stride=2, padding=1),  # 128 -> 64
-            nn.LeakyReLU(0.2, inplace=True)
+            nn.Conv2d(4, nf, 3, padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(nf, nf, 3, padding=1),
+            nn.LeakyReLU(0.2)
         )
+        self.pool1 = nn.MaxPool2d(2)
+        
         self.enc2 = nn.Sequential(
-            nn.Conv2d(nf, nf*2, 4, stride=2, padding=1),  # 64 -> 32
-            nn.BatchNorm2d(nf*2),
-            nn.LeakyReLU(0.2, inplace=True)
+            nn.Conv2d(nf, nf*2, 3, padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(nf*2, nf*2, 3, padding=1),
+            nn.LeakyReLU(0.2)
         )
+        self.pool2 = nn.MaxPool2d(2)
+        
         self.enc3 = nn.Sequential(
-            nn.Conv2d(nf*2, nf*4, 4, stride=2, padding=1),  # 32 -> 16
-            nn.BatchNorm2d(nf*4),
-            nn.LeakyReLU(0.2, inplace=True)
+            nn.Conv2d(nf*2, nf*4, 3, padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(nf*4, nf*4, 3, padding=1),
+            nn.LeakyReLU(0.2)
         )
+        self.pool3 = nn.MaxPool2d(2)
         
-        # Attention layer at the bottleneck (16x16)
-        self.attention = SelfAttention(nf*4)
+        # Attention
+        self.attention = SelfAttention(in_dim=nf*4)
         
-        # Bottleneck (at 16x16)
+        # Bottleneck
         self.bottleneck = nn.Sequential(
             nn.Conv2d(nf*4, nf*4, 3, padding=1),
-            nn.BatchNorm2d(nf*4),
-            nn.LeakyReLU(0.2, inplace=True)
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(nf*4, nf*4, 3, padding=1),
+            nn.LeakyReLU(0.2)
         )
         
-        # Decoder (with upsampling)
+        # Decoder
+        self.up3 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         self.dec3 = nn.Sequential(
-            nn.ConvTranspose2d(nf*4, nf*2, 4, stride=2, padding=1),  # 16 -> 32
-            nn.BatchNorm2d(nf*2),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(nf*4, nf*4, 3, padding=1),  # Removed skip from bottleneck
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(nf*4, nf*4, 3, padding=1),
+            nn.LeakyReLU(0.2)
         )
+        
+        self.up2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         self.dec2 = nn.Sequential(
-            nn.ConvTranspose2d(nf*2, nf, 4, stride=2, padding=1),  # 32 -> 64
-            nn.BatchNorm2d(nf),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(nf*6, nf*2, 3, padding=1),  # nf*6 because of skip from enc2
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(nf*2, nf*2, 3, padding=1),
+            nn.LeakyReLU(0.2)
         )
+        
+        self.up1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         self.dec1 = nn.Sequential(
-            nn.ConvTranspose2d(nf, 3, 4, stride=2, padding=1),  # 64 -> 128
+            nn.Conv2d(nf*3, nf, 3, padding=1),    # nf*3 because of skip from enc1
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(nf, 3, 3, padding=1),
             nn.Tanh()
         )
-        
+    
     def forward(self, x, mask=None):
         if mask is None:
-            # During training, extract mask from the 4th channel
             mask = x[:, 3:4]  # Get the mask
             x = x[:, :3]      # Get the RGB channels
+            x = torch.cat([x, mask], dim=1)
         
         # Encoder
         e1 = self.enc1(x)
-        e2 = self.enc2(e1)
-        e3 = self.enc3(e2)
+        p1 = self.pool1(e1)
         
-        # Apply attention at 16x16 resolution
-        e3 = self.attention(e3)
+        e2 = self.enc2(p1)
+        p2 = self.pool2(e2)
         
-        # Bottleneck
-        b = self.bottleneck(e3)
+        e3 = self.enc3(p2)
+        p3 = self.pool3(e3)
         
-        # Decoder
-        d3 = self.dec3(b)
-        d2 = self.dec2(d3)
-        d1 = self.dec1(d2)
+        # Attention and bottleneck
+        att = self.attention(p3)
+        b = self.bottleneck(att)
+        
+        # Decoder with selective skip connections
+        d3 = self.up3(b)
+        d3 = self.dec3(d3)  # No skip connection here
+        
+        d2 = self.up2(d3)
+        d2 = torch.cat([d2, e2], dim=1)  # Skip from encoder level 2
+        d2 = self.dec2(d2)
+        
+        d1 = self.up1(d2)
+        d1 = torch.cat([d1, e1], dim=1)  # Skip from encoder level 1
+        d1 = self.dec1(d1)
         
         # Only output the hole region
-        return d1 * (1 - mask[:, :3])
+        return d1 * mask[:, :3]
 
 class Discriminator(nn.Module):
     """Discriminator network.
@@ -139,47 +163,11 @@ class Discriminator(nn.Module):
             nn.LeakyReLU(0.2, inplace=True),
             
             # Layer 3
-            nn.Conv2d(nf*2, 1, 4, stride=1, padding=1),
-            nn.Sigmoid()
+            nn.Conv2d(nf*2, 1, 4, stride=1, padding=1)
         )
     
     def forward(self, x):
         return self.model(x)
-
-class CelebDataset(Dataset):
-    """Custom Dataset for loading CelebA face images with masks for inpainting."""
-    def __init__(self, image_paths, transform=None):
-        self.image_paths = image_paths
-        self.transform = transform
-        
-    def __len__(self):
-        return len(self.image_paths)
-    
-    def __getitem__(self, idx):
-        image_path = self.image_paths[idx]
-        image = Image.open(image_path).convert('RGB')
-        
-        if self.transform:
-            image = self.transform(image)
-        
-        # Create a random hole mask (32x32)
-        mask = torch.zeros((4, 128, 128))  # 4 channels: RGB mask + hole position
-        hole_h = random.randint(0, 128-32)
-        hole_w = random.randint(0, 128-32)
-        
-        # Set the RGB mask channels
-        mask[:3, hole_h:hole_h+32, hole_w:hole_w+32] = 1
-        
-        # Set the hole position channel
-        mask[3, hole_h:hole_h+32, hole_w:hole_w+32] = 1
-        
-        # Apply the mask to create the masked image
-        masked_image = image * (1 - mask[:3])
-        
-        # Add the mask as the 4th channel
-        masked_image = torch.cat([masked_image, mask[3:]], dim=0)
-        
-        return image, masked_image, mask
 
 def calculate_ssim(img1, img2, pos_mask):
     """Calculate Structural Similarity Index between two images.
@@ -207,35 +195,53 @@ def calculate_ssim(img1, img2, pos_mask):
     
     return ssim(img1_hole, img2_hole, channel_axis=2, data_range=1.0)
 
+def edge_aware_loss(real_imgs, fake_imgs, mask):
+    """Calculate edge-aware loss between real and fake images in the hole region."""
+    # Simple Sobel filters for edge detection
+    sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], 
+                          dtype=torch.float32, device=real_imgs.device).view(1, 1, 3, 3).repeat(3, 1, 1, 1)
+    sobel_y = sobel_x.transpose(2, 3)
+    
+    # Add small epsilon to prevent division by zero
+    eps = 1e-8
+    
+    # Detect edges in both images
+    real_edges_x = F.conv2d(real_imgs, sobel_x, padding=1, groups=3)
+    real_edges_y = F.conv2d(real_imgs, sobel_y, padding=1, groups=3)
+    fake_edges_x = F.conv2d(fake_imgs, sobel_x, padding=1, groups=3)
+    fake_edges_y = F.conv2d(fake_imgs, sobel_y, padding=1, groups=3)
+    
+    # Combine edges with numerical stability
+    real_edges = torch.sqrt(real_edges_x.pow(2) + real_edges_y.pow(2) + eps)
+    fake_edges = torch.sqrt(fake_edges_x.pow(2) + fake_edges_y.pow(2) + eps)
+    
+    # Normalize edge responses to [0, 1] range
+    real_edges = real_edges / (torch.max(real_edges) + eps)
+    fake_edges = fake_edges / (torch.max(fake_edges) + eps)
+    
+    # Only compare edges in the hole region
+    edge_loss = F.l1_loss(real_edges * mask[:, :3], fake_edges * mask[:, :3])
+    
+    # Check for NaN and return zero if found
+    if torch.isnan(edge_loss):
+        return torch.tensor(0.0, device=real_imgs.device)
+    
+    return edge_loss
+
 def load_and_split_dataset(data_dir, max_files=None, batch_size=32):
-    """Load and split the dataset into train, validation, and test sets.
-    Ensures each split has at least one batch."""
+    """Load and split the dataset into train, validation, and test sets (80/10/10 split)."""
     image_paths = glob.glob(os.path.join(data_dir, "*.jpg"))
     if max_files:
-        # Ensure max_files is a multiple of batch_size * 3 (for train/val/test)
-        max_files = (max_files // (batch_size * 3)) * (batch_size * 3)
-        if max_files < batch_size * 3:
-            max_files = batch_size * 3  # Minimum size to ensure one batch per split
         image_paths = image_paths[:max_files]
     
     total_size = len(image_paths)
-    if total_size < batch_size * 3:
-        raise ValueError(f"Need at least {batch_size * 3} images for training (got {total_size})")
     
-    # Ensure each split gets at least one batch
-    min_split_size = batch_size
-    remaining_size = total_size - (min_split_size * 3)  # Reserve one batch for each split
+    # Calculate split sizes (80/10/10)
+    train_size = int(0.8 * total_size)
+    val_size = int(0.1 * total_size)
+    test_size = total_size - train_size - val_size  # Remainder to ensure we use all images
     
-    # Distribute remaining samples proportionally (60/20/20)
-    extra_train = (remaining_size * 60 // 100) // batch_size * batch_size
-    extra_val = (remaining_size * 20 // 100) // batch_size * batch_size
-    extra_test = (remaining_size * 20 // 100) // batch_size * batch_size
-    
-    train_size = min_split_size + extra_train
-    val_size = min_split_size + extra_val
-    test_size = min_split_size + extra_test
-    
-    print(f"\nDataset split sizes (batch_size={batch_size}):")
+    print(f"\nDataset split sizes:")
     print(f"Total images: {total_size}")
     print(f"Train size: {train_size} ({train_size//batch_size} batches)")
     print(f"Val size: {val_size} ({val_size//batch_size} batches)")
@@ -244,7 +250,7 @@ def load_and_split_dataset(data_dir, max_files=None, batch_size=32):
     # Split paths
     train_paths = image_paths[:train_size]
     val_paths = image_paths[train_size:train_size + val_size]
-    test_paths = image_paths[train_size + val_size:train_size + val_size + test_size]
+    test_paths = image_paths[train_size + val_size:]
     
     transform = transforms.Compose([
         transforms.Resize((128, 128)),
@@ -258,80 +264,59 @@ def load_and_split_dataset(data_dir, max_files=None, batch_size=32):
     
     return train_dataset, val_dataset, test_dataset
 
-def train_epoch(generator, discriminator, train_loader, g_optimizer, d_optimizer, criterion_gan, criterion_pixel, device):
-    """Train for one epoch."""
-    generator.train()
-    discriminator.train()
+class CelebDataset(Dataset):
+    """Custom Dataset for loading CelebA face images with masks for inpainting."""
+    def __init__(self, image_paths, transform=None, fixed_hole=None, margin=16):
+        self.image_paths = image_paths
+        self.transform = transform
+        self.fixed_hole = fixed_hole
+        self.margin = margin
     
-    total_g_loss = 0
-    total_d_loss = 0
-    total_pixel_loss = 0
-    total_ssim = 0
-    num_batches = 0
+    def __len__(self):
+        return len(self.image_paths)
     
-    for batch_idx, (real_imgs, masked_imgs, masks) in enumerate(train_loader):
-        real_imgs = real_imgs.to(device)
-        masked_imgs = masked_imgs.to(device)
-        masks = masks.to(device)
-        batch_size = real_imgs.size(0)
+    def __getitem__(self, idx):
+        image_path = self.image_paths[idx]
+        image = Image.open(image_path).convert('RGB')
         
-        # Train Discriminator
-        d_optimizer.zero_grad()
+        if self.transform:
+            image = self.transform(image)
         
-        # Generate inpainted image
-        gen_imgs = generator(masked_imgs)
+        # Create a hole mask (32x32)
+        mask = torch.zeros((4, 128, 128))  # 4 channels: RGB mask + hole position
         
-        # Composite the generated hole with the original image
-        hole_mask = masks[:, 3].unsqueeze(1)  # Get the hole position
-        composited_imgs = masked_imgs[:, :3] + gen_imgs * (1 - masks[:, :3])
+        if self.fixed_hole is not None:
+            # Use fixed hole position
+            hole_h, hole_w = self.fixed_hole
+        else:
+            # Random hole position with margin
+            hole_h = random.randint(self.margin, 128-32-self.margin)
+            hole_w = random.randint(self.margin, 128-32-self.margin)
         
-        # Get discriminator outputs
-        real_validity = discriminator(real_imgs)
-        fake_validity = discriminator(composited_imgs.detach())
+        # Set the RGB mask channels
+        mask[:3, hole_h:hole_h+32, hole_w:hole_w+32] = 1
         
-        # Discriminator loss
-        d_real_loss = criterion_gan(real_validity, torch.ones_like(real_validity))
-        d_fake_loss = criterion_gan(fake_validity, torch.zeros_like(fake_validity))
-        d_loss = (d_real_loss + d_fake_loss) / 2
+        # Set the hole position channel
+        mask[3, hole_h:hole_h+32, hole_w:hole_w+32] = 1
         
-        d_loss.backward()
-        d_optimizer.step()
+        # Create dilated mask by expanding hole region by x pixels in each direction
+        context_size = 4
+        h_start = max(0, hole_h - context_size)
+        h_end = min(128, hole_h + 32 + context_size)
+        w_start = max(0, hole_w - context_size)
+        w_end = min(128, hole_w + 32 + context_size)
         
-        # Train Generator
-        g_optimizer.zero_grad()
+        dilated_mask = mask.clone()
+        dilated_mask[:3, h_start:h_end, w_start:w_end] = 1
+        dilated_mask[3, h_start:h_end, w_start:w_end] = 1
         
-        # Generator adversarial loss
-        fake_validity = discriminator(composited_imgs)
-        g_adv_loss = criterion_gan(fake_validity, torch.ones_like(fake_validity))
+        # Apply the mask to create the masked image
+        masked_image = image * (1 - mask[:3])
         
-        # Pixel-wise loss (only for the hole region)
-        hole_region_real = real_imgs * (1 - masks[:, :3])
-        hole_region_fake = gen_imgs * (1 - masks[:, :3])
-        pixel_loss = criterion_pixel(hole_region_fake, hole_region_real)
+        # Add the dilated mask as the 4th channel
+        masked_image = torch.cat([masked_image, dilated_mask[3:]], dim=0)
         
-        # Total generator loss
-        g_loss = g_adv_loss + 100 * pixel_loss
-        
-        g_loss.backward()
-        g_optimizer.step()
-        
-        # Calculate SSIM for the hole region
-        ssim_val = calculate_ssim(
-            real_imgs[0].cpu(),
-            composited_imgs[0].detach().cpu(),
-            masks[0].cpu()
-        )
-        
-        total_g_loss += g_loss.item()
-        total_d_loss += d_loss.item()
-        total_pixel_loss += pixel_loss.item()
-        total_ssim += ssim_val
-        num_batches += 1
-    
-    return (total_g_loss / num_batches, 
-            total_d_loss / num_batches,
-            total_pixel_loss / num_batches,
-            total_ssim / num_batches)
+        return image, masked_image, mask, dilated_mask
 
 def validate(generator, discriminator, val_loader, criterion_gan, criterion_pixel, device):
     """Validate the model."""
@@ -340,34 +325,49 @@ def validate(generator, discriminator, val_loader, criterion_gan, criterion_pixe
     
     total_g_loss = 0
     total_pixel_loss = 0
+    total_edge_loss = 0
     total_ssim = 0
     num_batches = 0
     
+    def normalize_image(img):
+        """Normalize image to [0,1] range"""
+        img = img.clamp(-1, 1)  # First clamp to [-1,1]
+        img = (img + 1) / 2     # Then scale to [0,1]
+        return img
+    
     with torch.no_grad():
-        for real_imgs, masked_imgs, masks in val_loader:
+        for real_imgs, masked_imgs, masks, dilated_masks in val_loader:
             real_imgs = real_imgs.to(device)
             masked_imgs = masked_imgs.to(device)
             masks = masks.to(device)
+            dilated_masks = dilated_masks.to(device)
             
             # Generate inpainted image
             gen_imgs = generator(masked_imgs)
             
-            # Composite the generated hole with the original image
-            composited_imgs = masked_imgs[:, :3] + gen_imgs * (1 - masks[:, :3])
+            # Normalize images
+            real_imgs = normalize_image(real_imgs)
+            gen_imgs = normalize_image(gen_imgs)
+            
+            # Composite the generated hole with the original image using original mask
+            composited_imgs = real_imgs * (1 - masks[:, :3]) + gen_imgs * masks[:, :3]
             
             # Generator adversarial loss
             fake_validity = discriminator(composited_imgs)
             g_adv_loss = criterion_gan(fake_validity, torch.ones_like(fake_validity))
             
-            # Pixel-wise loss (only for the hole region)
-            hole_region_real = real_imgs * (1 - masks[:, :3])
-            hole_region_fake = gen_imgs * (1 - masks[:, :3])
+            # Pixel-wise loss (use dilated mask for learning context)
+            hole_region_real = real_imgs * dilated_masks[:, :3]
+            hole_region_fake = gen_imgs * dilated_masks[:, :3]
             pixel_loss = criterion_pixel(hole_region_fake, hole_region_real)
             
-            # Total generator loss
-            g_loss = g_adv_loss + 100 * pixel_loss
+            # Edge-aware loss with dilated context
+            edge_loss = edge_aware_loss(real_imgs, composited_imgs, dilated_masks)
             
-            # Calculate SSIM for the hole region
+            # Total generator loss
+            g_loss = g_adv_loss + 100 * pixel_loss + 25 * edge_loss
+            
+            # Calculate SSIM for the hole region (use original mask)
             ssim_val = calculate_ssim(
                 real_imgs[0].cpu(),
                 composited_imgs[0].detach().cpu(),
@@ -376,35 +376,238 @@ def validate(generator, discriminator, val_loader, criterion_gan, criterion_pixe
             
             total_g_loss += g_loss.item()
             total_pixel_loss += pixel_loss.item()
+            total_edge_loss += edge_loss.item()
             total_ssim += ssim_val
             num_batches += 1
     
     return (total_g_loss / num_batches,
             total_pixel_loss / num_batches,
+            total_edge_loss / num_batches,
             total_ssim / num_batches)
 
-def evaluate_and_display(generator, test_loader, device, num_images=3):
+def train_epoch(generator, discriminator, train_loader, g_optimizer, d_optimizer, criterion_gan, criterion_pixel, device):
+    """Train for one epoch."""
+    generator.train()
+    discriminator.train()
+    
+    total_g_loss = 0
+    total_d_loss = 0
+    total_pixel_loss = 0
+    total_edge_loss = 0
+    total_ssim = 0
+    num_batches = 0
+    
+    # Set gradient clipping threshold
+    max_grad_norm = 1.0
+    
+    # Track discriminator accuracy for dynamic training
+    d_real_acc = []
+    d_fake_acc = []
+    
+    for batch_idx, (real_imgs, masked_imgs, masks, dilated_masks) in enumerate(train_loader):
+        real_imgs = real_imgs.to(device)
+        masked_imgs = masked_imgs.to(device)
+        masks = masks.to(device)
+        dilated_masks = dilated_masks.to(device)
+        batch_size = real_imgs.size(0)
+        
+        # Only train discriminator if its accuracy is below threshold
+        train_disc = True
+        if len(d_real_acc) > 0 and len(d_fake_acc) > 0:
+            avg_acc = (np.mean(d_real_acc[-50:]) + np.mean(d_fake_acc[-50:])) / 2
+            if avg_acc > 0.8:  # If discriminator is too strong, skip training it
+                train_disc = False
+        
+        # Train Discriminator
+        if train_disc:
+            d_optimizer.zero_grad()
+            
+            # Generate inpainted image
+            gen_imgs = generator(masked_imgs)
+            
+            # Ensure images are in [-1, 1] range for discriminator
+            real_imgs = torch.clamp(real_imgs, -1, 1)
+            gen_imgs = torch.clamp(gen_imgs, -1, 1)
+            
+            # Composite the generated hole with the original image using original mask
+            composited_imgs = real_imgs * (1 - masks[:, :3]) + gen_imgs * masks[:, :3]
+            composited_imgs = torch.clamp(composited_imgs, -1, 1)
+            
+            # Get discriminator outputs
+            real_validity = discriminator(real_imgs)
+            fake_validity = discriminator(composited_imgs.detach())
+            
+            # Create labels with label smoothing for more stable training
+            valid = torch.ones_like(real_validity, device=device) * 0.9
+            fake = torch.zeros_like(fake_validity, device=device) * 0.1
+            
+            # Discriminator loss
+            d_real_loss = criterion_gan(real_validity, valid)
+            d_fake_loss = criterion_gan(fake_validity, fake)
+            d_loss = (d_real_loss + d_fake_loss) / 2
+            
+            if not torch.isnan(d_loss):
+                d_loss.backward()
+                torch.nn.utils.clip_grad_norm_(discriminator.parameters(), max_grad_norm)
+                d_optimizer.step()
+            
+            # Track discriminator accuracy
+            d_real_acc.append((real_validity > 0.5).float().mean().item())
+            d_fake_acc.append((fake_validity < 0.5).float().mean().item())
+        
+        # Train Generator
+        g_optimizer.zero_grad()
+        
+        # Generate inpainted image using dilated mask for context
+        gen_imgs = generator(masked_imgs)  # masked_imgs already contains dilated mask
+        
+        # Generator adversarial loss
+        fake_validity = discriminator(composited_imgs)
+        g_adv_loss = criterion_gan(fake_validity, valid)
+        
+        # Pixel-wise loss (use dilated mask for learning context)
+        hole_region_real = real_imgs * dilated_masks[:, :3]
+        hole_region_fake = gen_imgs * dilated_masks[:, :3]
+        pixel_loss = criterion_pixel(hole_region_fake, hole_region_real)
+        
+        # Edge-aware loss with dilated context
+        edge_loss = edge_aware_loss(real_imgs, composited_imgs, dilated_masks)
+        
+        # Total generator loss (weighted sum)
+        g_loss = g_adv_loss + 100 * pixel_loss + 25 * edge_loss
+        
+        if not torch.isnan(g_loss):
+            g_loss.backward()
+            torch.nn.utils.clip_grad_norm_(generator.parameters(), max_grad_norm)
+            g_optimizer.step()
+        
+        # Calculate SSIM for the hole region (use original mask for evaluation)
+        with torch.no_grad():
+            ssim_val = calculate_ssim(
+                real_imgs[0].cpu(),
+                composited_imgs[0].detach().cpu(),
+                masks[0].cpu()  # Use original mask for SSIM
+            )
+        
+        # Update totals only if values are not NaN
+        if not torch.isnan(g_loss):
+            total_g_loss += g_loss.item()
+        if not torch.isnan(d_loss) and train_disc:
+            total_d_loss += d_loss.item()
+        if not torch.isnan(pixel_loss):
+            total_pixel_loss += pixel_loss.item()
+        if not torch.isnan(edge_loss):
+            total_edge_loss += edge_loss.item()
+        if not np.isnan(ssim_val):
+            total_ssim += ssim_val
+        num_batches += 1
+    
+    # Safely compute averages
+    if num_batches > 0:
+        return (
+            total_g_loss / num_batches if total_g_loss > 0 else 0,
+            total_d_loss / num_batches if total_d_loss > 0 else 0,
+            total_pixel_loss / num_batches if total_pixel_loss > 0 else 0,
+            total_edge_loss / num_batches if total_edge_loss > 0 else 0,
+            total_ssim / num_batches if total_ssim > 0 else 0
+        )
+    return 0, 0, 0, 0, 0
+
+def evaluate_and_display(generator, test_loader, device, num_images=10):
     """Display original, masked, and inpainted images side by side."""
     generator.eval()
     
     # Get a batch of test images
-    real_images, masked_images, pos_masks = next(iter(test_loader))
+    real_images, masked_images, masks, dilated_masks = next(iter(test_loader))
     real_images = real_images[:num_images].to(device)
     masked_images = masked_images[:num_images].to(device)
-    masks = pos_masks[:, :3][:num_images].to(device)  # RGB channels contain the mask
-    
-    with torch.no_grad():
-        generated_images = generator(masked_images)
-        completed_images = masked_images[:, :3] + generated_images * (1 - masks)
+    masks = masks[:num_images].to(device)
     
     # Create figure with subplots
-    fig, axes = plt.subplots(num_images, 3, figsize=(12, 4*num_images))
+    fig, axes = plt.subplots(num_images, 4, figsize=(16, 4*num_images))
+    if num_images == 1:
+        axes = axes.reshape(1, -1)
     
-    for i in range(num_images):
+    def normalize_image(img):
+        """Normalize image to [0,1] range"""
+        img = img.clamp(-1, 1)  # First clamp to [-1,1]
+        img = (img + 1) / 2     # Then scale to [0,1]
+        return img
+    
+    with torch.no_grad():
+        # Generate inpainted images
+        generated_images = generator(masked_images)
+        generated_images = normalize_image(generated_images)
+        
+        # Normalize other images
+        real_images = normalize_image(real_images)
+        masked_images = normalize_image(masked_images[:, :3])  # Only RGB channels
+        
+        # Composite the generated hole with the original image using original mask
+        completed_images = real_images * (1 - masks[:, :3]) + generated_images * masks[:, :3]
+        
+        for i in range(num_images):
+            # Convert images to numpy and transpose
+            real_img = real_images[i].cpu().numpy().transpose(1, 2, 0)
+            masked_img = masked_images[i].cpu().numpy().transpose(1, 2, 0)
+            generated_img = generated_images[i].cpu().numpy().transpose(1, 2, 0)
+            completed_img = completed_images[i].cpu().numpy().transpose(1, 2, 0)
+            
+            # Display images
+            axes[i, 0].imshow(real_img)
+            axes[i, 0].set_title('Original')
+            axes[i, 0].axis('off')
+            
+            axes[i, 1].imshow(masked_img)
+            axes[i, 1].set_title('Masked')
+            axes[i, 1].axis('off')
+            
+            axes[i, 2].imshow(generated_img)
+            axes[i, 2].set_title('Generated (hole only)')
+            axes[i, 2].axis('off')
+            
+            axes[i, 3].imshow(completed_img)
+            axes[i, 3].set_title('Inpainted')
+            axes[i, 3].axis('off')
+    
+    plt.tight_layout()
+    os.makedirs('out', exist_ok=True)
+    plt.savefig(os.path.join('out', 'inpainting_results.png'), dpi=150, bbox_inches='tight')
+    plt.close()
+
+def evaluate_and_display_fixed(generator, test_dataset, device, fixed_indices=[0, 1, 2], fixed_holes=[(48, 48), (32, 64), (64, 32)]):
+    """Display original, masked, and inpainted images side by side with fixed holes."""
+    generator.eval()
+    
+    # Create a figure with subplots
+    fig, axes = plt.subplots(len(fixed_indices), 4, figsize=(16, 4*len(fixed_indices)))
+    
+    for i, (idx, hole_pos) in enumerate(zip(fixed_indices, fixed_holes)):
+        # Get the image and create fixed mask
+        image_path = test_dataset.image_paths[idx]
+        image = Image.open(image_path).convert('RGB')
+        image = test_dataset.transform(image)
+        image = image.unsqueeze(0).to(device)
+        
+        # Create mask with fixed hole
+        mask = torch.zeros((1, 4, 128, 128), device=device)
+        hole_h, hole_w = hole_pos
+        mask[0, :3, hole_h:hole_h+32, hole_w:hole_w+32] = 1
+        mask[0, 3, hole_h:hole_h+32, hole_w:hole_w+32] = 1
+        
+        # Create masked image
+        masked_image = image * (1 - mask[:, :3])
+        model_input = torch.cat([masked_image, mask[:, 3:]], dim=1)
+        
+        with torch.no_grad():
+            generated_image = generator(model_input)
+            completed_image = image * (1 - mask[:, :3]) + generated_image
+        
         # Convert images back to display format
-        real_img = ((real_images[i].cpu().numpy() + 1) / 2).transpose(1, 2, 0)
-        masked_img = ((masked_images[i, :3].cpu().numpy() + 1) / 2).transpose(1, 2, 0)
-        completed_img = ((completed_images[i].cpu().numpy() + 1) / 2).transpose(1, 2, 0)
+        real_img = ((image[0].cpu().numpy() + 1) / 2).transpose(1, 2, 0)
+        masked_img = ((masked_image[0].cpu().numpy() + 1) / 2).transpose(1, 2, 0)
+        generated_img = ((generated_image[0].cpu().numpy() + 1) / 2).transpose(1, 2, 0)
+        completed_img = ((completed_image[0].cpu().numpy() + 1) / 2).transpose(1, 2, 0)
         
         # Display images
         axes[i, 0].imshow(real_img)
@@ -415,12 +618,17 @@ def evaluate_and_display(generator, test_loader, device, num_images=3):
         axes[i, 1].set_title('Masked')
         axes[i, 1].axis('off')
         
-        axes[i, 2].imshow(completed_img)
-        axes[i, 2].set_title('Inpainted')
+        axes[i, 2].imshow(generated_img)
+        axes[i, 2].set_title('Generated (hole only)')
         axes[i, 2].axis('off')
+        
+        axes[i, 3].imshow(completed_img)
+        axes[i, 3].set_title('Inpainted')
+        axes[i, 3].axis('off')
     
     plt.tight_layout()
-    plt.savefig('inpainting_results.png')
+    os.makedirs('out', exist_ok=True)
+    plt.savefig(os.path.join('out', 'inpainting_fixed_results.png'))
     plt.close()
 
 def print_model_summary(model):
@@ -458,11 +666,23 @@ def print_model_summary(model):
     print("-" * 80)
 
 if __name__ == "__main__":
+    # Set random seeds for reproducibility
+    torch.manual_seed(42)
+    torch.cuda.manual_seed(42)
+    np.random.seed(42)
+    random.seed(42)
+    
+    # Create output directory
+    out_dir = "out"
+    os.makedirs(out_dir, exist_ok=True)
+    
     # Configuration
     data_dir = "data_celeb"
-    batch_size = 16
-    max_files = batch_size * 6  # Ensure 2 batches per split
-    epochs = 5
+    batch_size = 10
+    max_files = 200
+    epochs = 20
+    
+    print(f"Starting training with edge-aware loss...")
     
     # Check for AMD GPU
     if torch.backends.mps.is_available():
@@ -478,13 +698,13 @@ if __name__ == "__main__":
     # Load and split the dataset
     train_dataset, val_dataset, test_dataset = load_and_split_dataset(data_dir, max_files=max_files, batch_size=batch_size)
     
-    print(f"Dataset splits (using {max_files} files):")
+    print(f"Dataset splits:")
     print(f"Train: {len(train_dataset)} images")
     print(f"Validation: {len(val_dataset)} images")
     print(f"Test: {len(test_dataset)} images")
     
-    # Create dataloaders with more workers
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=False)  # Disabled pin_memory for CPU
+    # Create dataloaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=False)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=False)
     
@@ -499,39 +719,46 @@ if __name__ == "__main__":
     # Setup optimizers and losses
     g_optimizer = optim.Adam(generator.parameters(), lr=0.0002, betas=(0.5, 0.999))
     d_optimizer = optim.Adam(discriminator.parameters(), lr=0.0002, betas=(0.5, 0.999))
-    criterion_gan = nn.BCELoss()
-    criterion_pixel = nn.L1Loss()  # L1 loss for pixel-wise reconstruction
+    
+    # Use BCEWithLogitsLoss instead of BCELoss since we removed sigmoid from discriminator
+    criterion_gan = nn.BCEWithLogitsLoss()
+    criterion_pixel = nn.L1Loss()
     
     # Training history
     train_g_losses = []
     train_d_losses = []
     train_pixel_losses = []
+    train_edge_losses = []
     train_ssims = []
     val_g_losses = []
     val_pixel_losses = []
+    val_edge_losses = []
     val_ssims = []
     
     # Training loop
     start_time = time.time()
     best_val_ssim = 0
+    print(f"Starting training for {epochs} epochs...")
     for epoch in range(1, epochs + 1):
         epoch_start = time.time()
         
         # Training
-        train_g_loss, train_d_loss, train_pixel_loss, train_ssim = train_epoch(
+        train_g_loss, train_d_loss, train_pixel_loss, train_edge_loss, train_ssim = train_epoch(
             generator, discriminator, train_loader, g_optimizer, d_optimizer, criterion_gan, criterion_pixel, device
         )
         train_g_losses.append(train_g_loss)
         train_d_losses.append(train_d_loss)
         train_pixel_losses.append(train_pixel_loss)
+        train_edge_losses.append(train_edge_loss)
         train_ssims.append(train_ssim)
         
         # Validation
-        val_g_loss, val_pixel_loss, val_ssim = validate(
+        val_g_loss, val_pixel_loss, val_edge_loss, val_ssim = validate(
             generator, discriminator, val_loader, criterion_gan, criterion_pixel, device
         )
         val_g_losses.append(val_g_loss)
         val_pixel_losses.append(val_pixel_loss)
+        val_edge_losses.append(val_edge_loss)
         val_ssims.append(val_ssim)
         
         # Save best model
@@ -545,14 +772,14 @@ if __name__ == "__main__":
                 'd_optimizer_state_dict': d_optimizer.state_dict(),
                 'epoch': epoch,
                 'val_ssim': val_ssim,
-            }, 'best_model.pth')
+            }, os.path.join(out_dir, 'best_model.pth'))
         
         epoch_time = time.time() - epoch_start
         total_time = epoch_time * epoch
         
         print(f"Epoch [{epoch}/{epochs}]")
-        print(f"Train - G_loss: {train_g_loss:.4f}, D_loss: {train_d_loss:.4f}, Pixel_loss: {train_pixel_loss:.4f}, SSIM: {train_ssim:.4f}")
-        print(f"Val - G_loss: {val_g_loss:.4f}, Pixel_loss: {val_pixel_loss:.4f}, SSIM: {val_ssim:.4f}")
+        print(f"Train - G_loss: {train_g_loss:.4f}, D_loss: {train_d_loss:.4f}, Pixel_loss: {train_pixel_loss:.4f}, Edge_loss: {train_edge_loss:.4f}, SSIM: {train_ssim:.4f}")
+        print(f"Val - G_loss: {val_g_loss:.4f}, Pixel_loss: {val_pixel_loss:.4f}, Edge_loss: {val_edge_loss:.4f}, SSIM: {val_ssim:.4f}")
         print(f"Time - Epoch: {epoch_time:.1f}s, Total: {total_time:.1f}s\n")
     
     # Save final model
@@ -563,10 +790,11 @@ if __name__ == "__main__":
         'd_optimizer_state_dict': d_optimizer.state_dict(),
         'epoch': epochs,
         'val_ssim': val_ssim,
-    }, 'final_model.pth')
+    }, os.path.join(out_dir, 'final_model.pth'))
     
     print("\nGenerating inpainting results...")
     evaluate_and_display(generator, test_loader, device)
+    evaluate_and_display_fixed(generator, test_dataset, device)
     
     # Plot training history
     plt.figure(figsize=(15, 5))
@@ -589,15 +817,17 @@ if __name__ == "__main__":
     plt.title('Pixel-wise Reconstruction Loss')
     
     plt.subplot(1, 3, 3)
+    plt.plot(train_edge_losses, label='Train Edge Loss')
+    plt.plot(val_edge_losses, label='Val Edge Loss')
     plt.plot(train_ssims, label='Train SSIM')
     plt.plot(val_ssims, label='Val SSIM')
     plt.xlabel('Epoch')
-    plt.ylabel('SSIM')
+    plt.ylabel('Edge Loss and SSIM')
     plt.legend()
-    plt.title('Structural Similarity Index')
+    plt.title('Edge-aware Loss and Structural Similarity Index')
     
     plt.tight_layout()
-    plt.savefig('training_plots.png')
+    plt.savefig(os.path.join(out_dir, 'training_plots.png'))
     plt.close()
 
     evaluate_and_display(generator, test_loader, device)
