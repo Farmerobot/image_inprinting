@@ -541,7 +541,11 @@ def evaluate_and_display(generator, test_loader, device, num_images=10):
     
     with torch.no_grad():
         # Generate inpainted images
+        # Measure inference time
+        start_time = time.time()
         generated_images = generator(masked_images)
+        end_time = time.time()
+        print(f"Inference time: {end_time - start_time:.6f} seconds")
         generated_images = normalize_image(generated_images)
         
         # Normalize other images
