@@ -30,7 +30,7 @@ The generator follows a U-Net style architecture with skip connections and self-
 
 1. **Encoder Path**:
    - `enc1`: Initial feature extraction (39,296 params)
-     - Input: 128x128x3 masked image
+     - Input: 200x200x3 masked image
      - Output channels: 64
    - `enc2`: Mid-level feature extraction (221,440 params)
      - Progressive feature learning
@@ -55,7 +55,7 @@ The generator follows a U-Net style architecture with skip connections and self-
    - `dec2`: Mid-level reconstruction (590,080 params)
      - Progressive refinement of features
    - `dec1`: Final reconstruction (112,387 params)
-     - Output: Complete 128x128x3 image
+     - Output: Complete 200x200x3 image
      - Fine detail generation
 
 Each encoder block is followed by max pooling (`pool1`, `pool2`, `pool3`) for spatial dimension reduction. The decoder uses upsampling (`up1`, `up2`, `up3`) to restore spatial dimensions.
@@ -76,13 +76,13 @@ A lightweight PatchGAN discriminator that focuses on local image coherence:
 ## Dataset Description
 The project uses the CelebA (CelebFaces Attributes) dataset, which is a large-scale face attributes dataset with more than 200,000 celebrity images. For this project, we use a subset of 1024 images, each containing:
 - High-quality face photographs
-- Resolution of 128x128 pixels after preprocessing
+- Resolution of 200x200 pixels after preprocessing
 - RGB color format
 - Diverse facial features, expressions, and poses
 
 ### Data Processing
 1. **Image Preprocessing**:
-   - Images are resized to 128x128 pixels
+   - Images are resized to 200x200 pixels
    - Normalized to [-1, 1] range
    - Converted to RGB format
 
@@ -126,6 +126,9 @@ You can find these results in:
 ### Training Time
 - 180 seconds per epoch on MPS (Metal Performance Shaders)
 - Total training time: ~1 hour for 20 epochs
+
+### Inference Time
+- Inference time: 0.29 seconds per batch on MPS (Metal Performance Shaders)
 
 ### Hyperparameters
 1. **Network Architecture**:
