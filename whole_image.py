@@ -12,6 +12,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from skimage.metrics import structural_similarity as ssim
 import torch.nn.functional as F
+from tqdm import tqdm
+
+IMG_SIZE = 200
 
 class SelfAttention(nn.Module):
     """Self attention layer for the generator."""
@@ -42,7 +45,7 @@ class SelfAttention(nn.Module):
 class Generator(nn.Module):
     """Generator network for image inpainting.
     A U-Net style architecture with skip connections and attention."""
-    def __init__(self, nf=16):
+    def __init__(self, nf=32):
         super(Generator, self).__init__()
         
         # Encoder
@@ -256,7 +259,7 @@ def load_and_split_dataset(data_dir, max_files=None, batch_size=32):
     test_paths = image_paths[train_size + val_size:]
     
     transform = transforms.Compose([
-        transforms.Resize((128, 128)),
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
@@ -286,15 +289,15 @@ class CelebDataset(Dataset):
             image = self.transform(image)
         
         # Create a hole mask (32x32)
-        mask = torch.zeros((4, 128, 128))  # 4 channels: RGB mask + hole position
+        mask = torch.zeros((4, IMG_SIZE, IMG_SIZE))  # 4 channels: RGB mask + hole position
         
         if self.fixed_hole is not None:
             # Use fixed hole position
             hole_h, hole_w = self.fixed_hole
         else:
             # Random hole position with margin
-            hole_h = random.randint(self.margin, 128-32-self.margin)
-            hole_w = random.randint(self.margin, 128-32-self.margin)
+            hole_h = random.randint(self.margin, IMG_SIZE-32-self.margin)
+            hole_w = random.randint(self.margin, IMG_SIZE-32-self.margin)
         
         # Set the RGB mask channels
         mask[:3, hole_h:hole_h+32, hole_w:hole_w+32] = 1
@@ -393,7 +396,8 @@ def train_epoch(generator, discriminator, train_loader, g_optimizer, d_optimizer
     d_real_acc = []
     d_fake_acc = []
     
-    for batch_idx, (real_imgs, masked_imgs, masks) in enumerate(train_loader):
+    progress_bar = tqdm(train_loader, desc='Training', leave=True)
+    for batch_idx, (real_imgs, masked_imgs, masks) in enumerate(progress_bar):
         real_imgs = real_imgs.to(device)
         masked_imgs = masked_imgs.to(device)
         masks = masks.to(device)
@@ -676,9 +680,9 @@ if __name__ == "__main__":
     
     # Configuration
     data_dir = "data_celeb"
-    batch_size = 10
-    max_files = 200
-    epochs = 20
+    batch_size = 20
+    max_files = 1000
+    epochs = 30
     
     print(f"Starting training with edge-aware loss...")
     
@@ -739,6 +743,13 @@ if __name__ == "__main__":
     print(f"Starting training for {epochs} epochs...")
     for epoch in range(1, epochs + 1):
         epoch_start = time.time()
+
+        # loaded = torch.load(os.path.join(out_dir, 'final_model.pth'))
+        # generator.load_state_dict(loaded['generator_state_dict'])
+        # discriminator.load_state_dict(loaded['discriminator_state_dict'])
+        # g_optimizer.load_state_dict(loaded['g_optimizer_state_dict'])
+        # d_optimizer.load_state_dict(loaded['d_optimizer_state_dict'])
+        # val_ssim = loaded['val_ssim']
         
         # Training
         train_g_loss, train_d_loss, train_pixel_loss, train_edge_loss, train_ssim = train_epoch(
@@ -780,15 +791,15 @@ if __name__ == "__main__":
         print(f"Val - G_loss: {val_g_loss:.4f}, Pixel_loss: {val_pixel_loss:.4f}, Edge_loss: {val_edge_loss:.4f}, SSIM: {val_ssim:.4f}")
         print(f"Time - Epoch: {epoch_time:.1f}s, Total: {total_time:.1f}s\n")
     
-    # Save final model
-    torch.save({
-        'generator_state_dict': generator.state_dict(),
-        'discriminator_state_dict': discriminator.state_dict(),
-        'g_optimizer_state_dict': g_optimizer.state_dict(),
-        'd_optimizer_state_dict': d_optimizer.state_dict(),
-        'epoch': epochs,
-        'val_ssim': val_ssim,
-    }, os.path.join(out_dir, 'final_model.pth'))
+        # Save final model
+        torch.save({
+            'generator_state_dict': generator.state_dict(),
+            'discriminator_state_dict': discriminator.state_dict(),
+            'g_optimizer_state_dict': g_optimizer.state_dict(),
+            'd_optimizer_state_dict': d_optimizer.state_dict(),
+            'epoch': epochs,
+            'val_ssim': val_ssim,
+        }, os.path.join(out_dir, 'final_model.pth'))
     
     print("\nGenerating inpainting results...")
     evaluate_and_display(generator, test_loader, device)

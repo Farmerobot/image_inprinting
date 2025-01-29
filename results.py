@@ -10,10 +10,10 @@ def main():
     print(f"Using device: {device}")
     
     # Load the model
-    generator = Generator(nf=16).to(device)
+    generator = Generator(nf=32).to(device)
     
     # Load the best checkpoint
-    checkpoint_path = os.path.join('out', 'best_model.pth')
+    checkpoint_path = os.path.join('out', 'final_model.pth')
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=device)
         generator.load_state_dict(checkpoint['generator_state_dict'])

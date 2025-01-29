@@ -139,7 +139,7 @@ You can find these results in:
 2. **Optimization**:
    - Learning rate: 0.0002 (standard for GAN training, helps prevent mode collapse)
    - Adam betas: (0.5, 0.999) (β1=0.5 helps stabilize GAN training)
-   - Batch size: 32 (balanced between memory usage and training stability)
+   - Batch size: 20 (balanced between memory usage and training stability)
    - Number of epochs: 20 (sufficient for convergence on this dataset)
 
 3. **Mask Configuration**:
@@ -154,6 +154,28 @@ You can find these results in:
 
 ### Loss Graph
 ![Loss Graph](report_images/training_plot.jpg)
+
+## Alternative Architecture: Whole Image Processing
+This variant of the architecture processes the entire image at once, instead of focusing on the hole and its immediate surroundings. This approach allows the model to leverage full image context for more coherent inpainting.
+
+### Key Differences
+- Takes the complete masked image as input without additional padding
+- Processes the entire 200x200 image in one pass
+- Generator uses 32 base channels (compared to 64 in the original)
+- More memory efficient due to simpler architecture
+
+### Training Details
+- 80 seconds per epoch on MPS
+- Total training time: ~40 minutes for 30 epochs
+- Trained on 1000 images from CelebA dataset
+- Batch size: 20 images
+
+### Results
+![Example Results](report_images/example_data_2.png)
+*Example inpainting results showing original images, masked inputs, and generated outputs*
+
+![Training Progress](report_images/training_plot_2.png)
+*Training progress showing loss convergence and SSIM improvement over epochs*
 
 ## Setup and Usage
 1. Install dependencies:

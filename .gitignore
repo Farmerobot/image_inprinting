@@ -1,3 +1,5 @@
+.DS_store
+out_fajne
 # Python
 __pycache__/
 *.py[cod]
