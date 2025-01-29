@@ -9,13 +9,14 @@
 | | Sobel loss function | 1 |
 | | Self-attention mechanism | 1 |
 | | GAN architecture | 1 |
+| | Second architecture | 1 |
 | Dataset | Over 1000 CelebA photos | 0 |
 | Training | Data split (train/val/test) | 0 |
-| | Hyperparameter tuning or estimation | 1 |
+| | Architecture tuning | 1 |
 | | Multiple metrics (SSIM, L1, Edge-aware, GAN loss) | 1 |
 | | Data augmentation | 1 |
 | Tools | Git with README | 0 |
-| **Total Points** | | **11** |
+| **Total Points** | | **12** |
 
 ## Project Description
 This project implements an image inpainting system using Generative Adversarial Networks (GANs). Image inpainting is the task of filling in missing or damaged parts of images in a visually plausible way. The system uses a combination of adversarial and pixel-wise losses to generate realistic completions for masked regions in images.
